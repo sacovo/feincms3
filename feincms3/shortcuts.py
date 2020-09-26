@@ -1,4 +1,4 @@
-from django.core import paginator
+from django.core.paginator import Paginator
 from django.template.response import TemplateResponse
 
 
@@ -24,7 +24,13 @@ def template_name(model, template_name_suffix):
 
 
 def render_list(
-    request, queryset, context=None, *, template_name_suffix="_list", paginate_by=None
+    request,
+    queryset,
+    context=None,
+    *,
+    model=None,
+    paginate_by=None,
+    template_name_suffix="_list"
 ):
     """
     Render a list of items
@@ -50,26 +56,16 @@ def render_list(
 
     context = context or {}
     if paginate_by:
-        p = paginator.Paginator(queryset, paginate_by)
-        # Note! Django>=2.0 allows us to simply
-        # object_list = p.get_page(request.GET.get("page"))
-        try:
-            object_list = p.page(request.GET.get("page"))
-        except paginator.PageNotAnInteger:
-            object_list = p.page(1)
-        except paginator.EmptyPage:
-            object_list = p.page(p.num_pages)
+        object_list = Paginator(queryset, paginate_by).get_page(request.GET.get("page"))
     else:
         object_list = queryset
 
+    model = model or queryset.model
     context.update(
-        {
-            "object_list": object_list,
-            "%s_list" % queryset.model._meta.model_name: object_list,
-        }
+        {"object_list": object_list, "%s_list" % model._meta.model_name: object_list}
     )
     return TemplateResponse(
-        request, template_name(queryset.model, template_name_suffix), context
+        request, template_name(model, template_name_suffix), context
     )
 
 

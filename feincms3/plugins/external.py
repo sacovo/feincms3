@@ -27,7 +27,7 @@ __all__ = (
 def oembed_json(url, *, cache_failures=True):
     """
     Asks `Noembed <https://noembed.com/>`_ for the embedding HTML code for
-    arbitrary URLs. Sites supported include Youtube, Vimeo, Twitter and many
+    arbitrary URLs. Sites supported include YouTube, Vimeo, Twitter and many
     others.
 
     Successful embeds are always cached for 30 days.
@@ -83,14 +83,19 @@ def oembed_html(url, *, cache_failures=True):
 
 def render_external(plugin, **kwargs):
     """
-    Render the plugin, embedding it in the appropriate markup for Foundation's
+    Render the plugin, embedding it in the appropriate markup for `Foundation's
     responsive-embed element
-    (https://foundation.zurb.com/sites/docs/responsive-embed.html)
+    <https://foundation.zurb.com/sites/docs/responsive-embed.html>`__
+
+    The HTML embed code is generated using
+    :func:`~feincms3.plugins.external.oembed_html`. Maybe you want to take a
+    look at :mod:`feincms3.embedding` for a less versatile but much faster
+    alternative.
     """
 
     html = oembed_html(plugin.url)
     if "youtube.com" in html:
-        html = '<div class="responsive-embed widescreen">%s</div>' % (html,)
+        html = '<div class="responsive-embed widescreen youtube">%s</div>' % (html,)
     elif "vimeo.com" in html:
         html = '<div class="responsive-embed widescreen vimeo">%s</div>' % (html,)
     return mark_safe(html)
@@ -117,7 +122,7 @@ class ExternalForm(forms.ModelForm):
     """
 
     def clean(self):
-        data = super(ExternalForm, self).clean()
+        data = super().clean()
         url = data.get("url")
         if url and not oembed_html(url, cache_failures=False):
             raise forms.ValidationError(

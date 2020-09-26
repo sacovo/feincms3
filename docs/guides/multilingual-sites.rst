@@ -1,3 +1,5 @@
+.. _multilingual-sites:
+
 Multilingual sites
 ==================
 
@@ -68,3 +70,94 @@ A page tree might look as follows then::
     Page d'acceuil (FR)
     - A propos de nous
     - Actualité
+
+By manually setting the slug of all root pages to their respective
+language code (e.g. Home (EN) has a URL of ``/en/``, Startseite (DE) a
+URL of ``/de/``) you can generate a navigation pointing to all sites in
+their respective language (assuming that the built-in template context
+processor ``django.template.context_processors.i18n`` is active):
+
+.. code-block:: html+django
+
+    <nav class="languages">
+    {% for code, name in LANGUAGES %}
+      <a href="/{{ code }}/">{{ name }}</a>
+    {% endfor %}
+    </nav>
+
+
+Deep links to pages in other languages
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The navigation snippet above does not link translations directly but
+instead always shows the home page to visitors. It may be preferrable to
+define pages (and other CMS objects) as translations of each other so
+that it is possible to generate a navigation menu directly linking the
+same content in different languages directly.
+
+feincms3 offers a built-in way to achieve this. Instead of inheriting
+the default :class:`feincms3.mixins.LanguageMixin` inherit the
+:class:`feincms3.mixins.LanguageAndTranslationOfMixin`. The latter
+provides an additional ``translation_of`` foreign key which allows
+linking pages in other languages to the page in the first language in
+the ``LANGUAGES`` setting's list. In the example above, you could
+specify that "Über uns" is the german translation of "About us", and "A
+propos de nous" the french translation of "About us". The
+:func:`feincms3.mixins.LanguageAndTranslationOfMixin.translations`
+method returns a list of all known translations. Together with the
+:func:`~feincms3.templatetags.feincms3.translations` template filter you
+can generate a navigation menu as follows (assuming that ``object`` is
+the current page):
+
+.. code-block:: html+django
+
+    {% load feincms %}
+    <nav class="languages">
+    {% for lang in page.translations.active|translations %}
+      <a href="{% if lang.object %}{{ lang.object.get_absolute_url }}{% else %}/{{ lang.code }}/{% endif %}">
+        {{ lang.name }}
+      </a>
+    {% endfor %}
+    </nav>
+
+
+.. admonition:: LanguageAndTranslationOfMixin within feincms3.applications
+
+   The same should work for any CMS object inheriting
+   :class:`feincms3.mixins.LanguageAndTranslationOfMixin`, and should
+   also work when used within a feincms3 app.
+   (:ref:`Apps will be introduced later <apps-introduction>`.)
+
+   In this case it may be extra-important to wrap the object's call to
+   :func:`~feincms3.applications.reverse_app` in a block which overrides the
+   active language so that the article is preferrably shown in a website
+   with the matching language:
+
+   .. code-block:: python
+
+       from django.utils.translation import override
+       from feincms3.applications import reverse_app
+
+       class Article(LanguageAndTranslationOfMixin, ...):
+           def get_absolute_url(self):
+               with override(self.language_code):
+                   return reverse_app("articles", "detail", ...)
+
+   Generating the navigation menu for changing the language should
+   preferrably link to the translated article and only fall back to the
+   translated page's URL if no such article exists:
+
+   .. code-block:: python
+
+        def article_detail(request, ...):
+            page = page_for_app_request(request)
+            page.activate_language(request)
+            article = get_object_or_404(Article, ...)
+
+            translations = {obj.language_code: obj for obj in page.translations().active()}
+            translations.update(
+                {obj.language_code: obj for obj in article.translations().active()}
+            )
+
+            # Use {% for lang in available_translations|translations %} ... {% endfor %}
+            context = {"available_translations": translations}

@@ -1,25 +1,33 @@
 from django.db import models
-from django.utils.translation import gettext_lazy as _
+from django.utils.translation import gettext_lazy as _, override
 
 from content_editor.models import Region, Template, create_plugin_base
 
-from feincms3.apps import AppsMixin, reverse_app
-from feincms3.mixins import LanguageMixin, MenuMixin, RedirectMixin, TemplateMixin
+from feincms3.applications import AppsMixin, reverse_app
+from feincms3.mixins import (
+    LanguageAndTranslationOfMixin,
+    MenuMixin,
+    RedirectMixin,
+    TemplateMixin,
+)
 from feincms3.pages import AbstractPage
 from feincms3.plugins import external, html, image, richtext, snippet
 
 
 class Page(
     AbstractPage,
-    AppsMixin,  # For adding the articles app to pages through the CMS.
-    TemplateMixin,  # Two page templates, one with only a main
-    # region and another with a sidebar as well.
-    MenuMixin,  # We have a main and a footer navigation (meta).
-    LanguageMixin,  # We're building a multilingual CMS. (Also,
-    # feincms3.apps depends on LanguageMixin
-    # currently.)
-    RedirectMixin,  # Allow redirecting pages to other pages and/or arbitrary
-    # URLs.
+    # For adding the articles app to pages through the CMS:
+    AppsMixin,
+    # Two page templates, one with only a main region and another with a
+    # sidebar as well:
+    TemplateMixin,
+    # We have a main and a footer navigation (meta):
+    MenuMixin,
+    # We're building a multilingual CMS. (Also, feincms3.applications depends on
+    # LanguageMixin currently):
+    LanguageAndTranslationOfMixin,
+    # Allow redirecting pages to other pages and/or arbitrary URLs:
+    RedirectMixin,
 ):
 
     # TemplateMixin
@@ -60,6 +68,11 @@ class Page(
                 "urlconf": "stuff-with-required",
                 "required_fields": ("optional", "not_editable"),
             },
+        ),
+        (
+            "translated-articles",
+            _("translated articles"),
+            {"urlconf": "testapp.translated_articles_urls"},
         ),
     ]
 
@@ -114,3 +127,17 @@ class Article(models.Model):
         return reverse_app(
             (self.category, "articles"), "article-detail", kwargs={"pk": self.pk}
         )
+
+
+class TranslatedArticle(LanguageAndTranslationOfMixin):
+    title = models.CharField(_("title"), max_length=100)
+
+    class Meta:
+        ordering = ["-pk"]
+
+    def __str__(self):
+        return self.title
+
+    def get_absolute_url(self):
+        with override(self.language_code):
+            return reverse_app("translated-articles", "detail", kwargs={"pk": self.pk})

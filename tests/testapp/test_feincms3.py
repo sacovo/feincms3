@@ -1,16 +1,16 @@
+from contextlib import contextmanager
+
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.forms.models import modelform_factory
-from django.template import Context, Template
-from django.test import Client, TestCase
-from django.urls import set_urlconf
+from django.template import Context, Template, TemplateSyntaxError
+from django.test import Client, RequestFactory, TestCase
+from django.urls import NoReverseMatch, reverse, set_urlconf
 from django.utils.translation import deactivate_all, override
 
-from feincms3.apps import (
-    NoReverseMatch,
+from feincms3.applications import (
     apps_urlconf,
-    reverse,
     reverse_any,
     reverse_app,
     reverse_fallback,
@@ -18,8 +18,19 @@ from feincms3.apps import (
 from feincms3.plugins.external import ExternalForm
 from feincms3.regions import Regions
 from feincms3.renderer import TemplatePluginRenderer
+from feincms3.shortcuts import render_list
+from feincms3.templatetags.feincms3 import translations
 
-from .models import HTML, Article, External, Page
+from .models import HTML, Article, External, Page, TranslatedArticle
+
+
+@contextmanager
+def override_urlconf(urlconf):
+    set_urlconf(urlconf)
+    try:
+        yield
+    finally:
+        set_urlconf(None)
 
 
 def zero_management_form_data(prefix):
@@ -38,25 +49,10 @@ def merge_dicts(*dicts):
     return res
 
 
-def monkeypatches():
-    import django
-
-    if django.VERSION >= (2, 1):
-        from ckeditor.widgets import CKEditorWidget
-
-        _original_render = CKEditorWidget.render
-
-        def render(self, name, value, attrs=None, renderer=None):
-            return _original_render(self, name, value, attrs=attrs)
-
-        CKEditorWidget.render = render
-
-
 class Test(TestCase):
     def setUp(self):
         self.user = User.objects.create_superuser("admin", "admin@test.ch", "blabla")
         deactivate_all()
-        monkeypatches()
 
     def login(self):
         client = Client()
@@ -345,8 +341,7 @@ class Test(TestCase):
         response = self.client.get("/en/publications/")
         self.assertContains(response, 'class="article"', 5)
 
-        set_urlconf(apps_urlconf())
-        try:
+        with override_urlconf(apps_urlconf()):
             article = Article.objects.order_by("pk").first()
             with override("de"):
                 self.assertEqual(
@@ -369,8 +364,6 @@ class Test(TestCase):
                     ),
                     "/de/publications/%s/" % article.pk,
                 )
-        finally:
-            set_urlconf(None)
 
         response = self.client.get("/de/publications/%s/" % article.pk)
         self.assertContains(response, "<h1>publications 0</h1>", 1)
@@ -400,32 +393,6 @@ class Test(TestCase):
         )
         return home, blog
 
-    def test_apps_leaf(self):
-        """Test that applications are leaf nodes"""
-
-        home, blog = self._apps_validation_models()
-        home.application = "blog"
-        with self.assertRaises(ValidationError) as cm:
-            home.full_clean()
-
-        self.assertEqual(
-            cm.exception.error_dict["application"][0].message,
-            "Apps may not have any descendants in the tree.",
-        )
-
-    def test_apps_no_descendants(self):
-        """Test that apps have no descendants"""
-
-        home, blog = self._apps_validation_models()
-        third = Page(title="third", slug="third", language_code="en", parent=blog)
-        with self.assertRaises(ValidationError) as cm:
-            third.full_clean()
-
-        self.assertEqual(
-            cm.exception.error_dict["parent"][0].message,
-            "Invalid parent: Apps may not have any descendants.",
-        )
-
     def test_apps_duplicate(self):
         """Test that apps cannot be added twice with the exact same configuration"""
         home, blog = self._apps_validation_models()
@@ -440,6 +407,7 @@ class Test(TestCase):
         )
 
     def test_apps_required_fields(self):
+        """Apps can bave required fields"""
         home = Page(
             title="home",
             slug="home",
@@ -474,7 +442,7 @@ class Test(TestCase):
         self.assertContains(response, "set_application")
 
         response = client.post(clone_url, {"target": home.pk, "set_application": True})
-        self.assertContains(response, "Apps may not have any descendants in the tree.")
+        self.assertContains(response, "This exact app already exists.")
 
         # The other way round works
         clone_url = reverse("admin:testapp_page_clone", args=(home.pk,))
@@ -749,87 +717,50 @@ class Test(TestCase):
 
         return root, p1, p2
 
-    def test_move_to_root_last(self):
+    def test_move_to_root(self):
+        """First child of no parent should move to the root"""
         root, p1, p2 = self.prepare_for_move()
         client = self.login()
-
-        response = client.get(reverse("admin:testapp_page_move", args=(p1.pk,)))
-        self.assertContains(response, "*** p1", 1)
-        self.assertContains(response, "--- p2", 1)
-        self.assertContains(response, 'name="_save"', 1)
 
         response = client.post(
             reverse("admin:testapp_page_move", args=(p1.pk,)),
-            {"move_to": "last", "of": ""},
+            {"move_to": "0:first"},
         )
+        self.assertRedirects(response, "/admin/testapp/page/")
 
         self.assertEqual(
             [(p.pk, p.parent_id, p.position) for p in Page.objects.all()],
-            [(root.pk, None, 10), (p2.pk, root.pk, 20), (p1.pk, None, 20)],
-        )
-
-    def test_move_to_root_first(self):
-        root, p1, p2 = self.prepare_for_move()
-        client = self.login()
-
-        client.post(
-            reverse("admin:testapp_page_move", args=(p2.pk,)),
-            {"move_to": "first", "of": ""},
-        )
-
-        self.assertEqual(
-            [(p.pk, p.parent_id, p.position) for p in Page.objects.all()],
-            [(p2.pk, None, 10), (root.pk, None, 20), (p1.pk, root.pk, 10)],
+            [(p1.pk, None, 10), (root.pk, None, 20), (p2.pk, root.pk, 20)],
         )
 
     def test_move_to_child(self):
+        """First child of a different page, new siblings are pushed back"""
         root, p1, p2 = self.prepare_for_move()
         client = self.login()
 
-        client.post(
+        response = client.post(
             reverse("admin:testapp_page_move", args=(p2.pk,)),
-            {"move_to": "first", "of": p1.pk},
+            {"move_to": "{}:first".format(p1.pk)},
         )
+        self.assertRedirects(response, "/admin/testapp/page/")
 
         self.assertEqual(
             [(p.pk, p.parent_id, p.position) for p in Page.objects.all()],
             [(root.pk, None, 10), (p1.pk, root.pk, 10), (p2.pk, p1.pk, 10)],
         )
 
-    def test_invalid_move(self):
-        root, p1, p2 = self.prepare_for_move()
-        client = self.login()
-
-        response = client.post(reverse("admin:testapp_page_move", args=(root.pk,)), {})
-        self.assertContains(response, "This field is required.", 1)
-
-        response = client.post(
-            reverse("admin:testapp_page_move", args=(root.pk,)),
-            {"move_to": "first", "of": p1.pk},
-        )
-        self.assertContains(
-            response,
-            "Select a valid choice. That choice is not one of the available choices.",  # noqa
-        )
-
-        response = client.post(
-            reverse("admin:testapp_page_move", args=(root.pk,)),
-            {"move_to": "first", "of": root.pk},
-        )
-        self.assertContains(
-            response, "Cannot move node to a position relative to itself."
-        )
-
     def test_reorder_siblings(self):
+        """Reordering of siblings"""
         root, p1, p2 = self.prepare_for_move()
 
         p3 = Page.objects.create(title="p3", slug="p3", parent=root)
         client = self.login()
 
-        client.post(
+        response = client.post(
             reverse("admin:testapp_page_move", args=(p3.pk,)),
-            {"move_to": "right", "of": p1.pk},
+            {"move_to": "{}:right".format(p1.pk)},
         )
+        self.assertRedirects(response, "/admin/testapp/page/")
 
         self.assertEqual(
             [(p.pk, p.parent_id, p.position) for p in Page.objects.all()],
@@ -841,45 +772,8 @@ class Test(TestCase):
             ],
         )
 
-        client.post(
-            reverse("admin:testapp_page_move", args=(p3.pk,)),
-            {"move_to": "left", "of": p1.pk},
-        )
-
-        self.assertEqual(
-            [(p.pk, p.parent_id, p.position) for p in Page.objects.all()],
-            [
-                (root.pk, None, 10),
-                (p3.pk, root.pk, 10),
-                (p1.pk, root.pk, 20),
-                (p2.pk, root.pk, 30),
-            ],
-        )
-
-    def test_invalid_parent(self):
-        root, p1, p2 = self.prepare_for_move()
-        p1.application = "blog"
-        p1.save()
-
-        p2 = Page.objects.get(pk=p2.pk)
-        p2.parent_id = p1.pk
-
-        # Apps may not have descendants
-        self.assertRaises(ValidationError, p2.full_clean)
-
-        client = self.login()
-        response = client.post(
-            reverse("admin:testapp_page_move", args=(p2.pk,)),
-            {"move_to": "first", "of": p1.pk},
-        )
-
-        self.assertContains(
-            response,
-            "<li>Invalid parent: Apps may not have any descendants.</li>",
-            status_code=200,
-        )
-
     def test_redirects(self):
+        """Exercise model and view aspects of redirects"""
         page1 = Page.objects.create(
             title="home",
             slug="home",
@@ -982,6 +876,7 @@ class Test(TestCase):
         self.assertEqual(regions.cache_key("main"), "testapp.page-%s-main" % page.pk)
 
     def test_plugin_template_instance(self):
+        """The renderer handles template instances, not just template paths etc."""
         renderer = TemplatePluginRenderer()
         renderer.register_template_renderer(HTML, Template("{{ plugin.html|safe }}"))
         page = Page.objects.create(template_key="standard")
@@ -994,6 +889,7 @@ class Test(TestCase):
         self.assertEqual(regions.render("main", None), "<b>Hello</b>")
 
     def test_reverse_app_tag(self):
+        """Exercise the {% reverse_app %} template tag"""
         Page.objects.create(
             title="blog",
             slug="blog",
@@ -1002,7 +898,6 @@ class Test(TestCase):
             is_active=True,
             application="blog",
         )
-        set_urlconf(apps_urlconf())
 
         tests = [
             ("{% reverse_app 'blog' 'article-detail' pk=42 %}", "/blog/42/", {}),
@@ -1025,7 +920,7 @@ class Test(TestCase):
             ("{% reverse_app 'bla' 'bla' as t %}{{ t|default:'blub' }}", "blub", {}),
         ]
 
-        try:
+        with override_urlconf(apps_urlconf()):
             for tpl, out, ctx in tests:
                 t = Template("{% load feincms3 %}" + tpl)
                 self.assertEqual(t.render(Context(ctx)).strip(), out)
@@ -1036,10 +931,17 @@ class Test(TestCase):
                 Context(),
             )
 
-        finally:
-            set_urlconf(None)
+    def test_reverse_app_failures(self):
+        """Invalid parameters to {% reverse_app %}"""
+        with self.assertRaises(TemplateSyntaxError) as cm:
+            Template("{% load feincms3 %}{% reverse_app %}")
+        self.assertEqual(
+            str(cm.exception),
+            "'reverse_app' takes at least two arguments, a namespace and a URL pattern name.",  # noqa
+        )
 
     def test_descendant_update(self):
+        """Saving pages with descendants updates descendants too"""
         self.prepare_for_move()
         root, p1, p2 = list(Page.objects.all())
 
@@ -1069,6 +971,7 @@ class Test(TestCase):
         self.assertEqual(p2.path, "/root/p2/")
 
     def test_move_view_redirect(self):
+        """Move view redirects as expected when encountering an invalid PK"""
         client = self.login()
         # move_view also redirects to index page when encountering invalid
         # object IDs
@@ -1122,5 +1025,130 @@ class Test(TestCase):
         )
 
     def test_default_template_fallback(self):
+        """The TemplateMixin falls back to the first template"""
         template = Page(template_key="__notexists").template
         self.assertEqual(template.key, "standard")
+
+    def test_apps_urlconf_no_apps(self):
+        """apps_urlconf returns the ROOT_URLCONF when there are no apps at all"""
+        self.assertEqual(apps_urlconf(apps=[]), "testapp.urls")
+
+    def test_get_absolute_url(self):
+        """Page.get_absolute_url with and without paths"""
+        self.assertEqual(Page(path="/test/").get_absolute_url(), "/test/")
+        self.assertEqual(Page(path="/").get_absolute_url(), "/")
+
+    def test_render_list(self):
+        """render_list, automatic template selection and pagination"""
+        for i in range(7):
+            Article.objects.create(title="Article %s" % i, category="publications")
+
+        request = RequestFactory().get("/", data={"page": 2})
+        response = render_list(
+            request, list(Article.objects.all()), model=Article, paginate_by=2
+        )
+
+        self.assertEqual(response.template_name, "testapp/article_list.html")
+        self.assertEqual(len(response.context_data["object_list"]), 2)
+        self.assertEqual(response.context_data["object_list"].number, 2)
+        self.assertEqual(response.context_data["object_list"].paginator.num_pages, 4)
+
+    def test_language_and_translation_of_mixin(self):
+        """LanguageAndTranslationOfMixin.translations testing"""
+        original = Page.objects.create(
+            title="home-en",
+            slug="home-en",
+            path="/en/",
+            static_path=True,
+            language_code="en",
+            is_active=True,
+            menu="main",
+        )
+        translation = Page.objects.create(
+            title="home-de",
+            slug="home-de",
+            path="/de/",
+            static_path=True,
+            language_code="de",
+            is_active=True,
+            menu="main",
+            translation_of=original,
+        )
+        translation_fr = Page.objects.create(
+            title="home-fr",
+            slug="home-fr",
+            path="/fr/",
+            static_path=True,
+            language_code="fr",
+            is_active=False,  # Important!
+            menu="main",
+            translation_of=original,
+        )
+
+        self.assertEqual(
+            set(original.translations()), {original, translation, translation_fr}
+        )
+        self.assertEqual(set(original.translations().active()), {original, translation})
+        self.assertEqual(
+            set(translation.translations().active()), {original, translation}
+        )
+
+        self.assertEqual(
+            [
+                language["object"]
+                for language in translations(translation.translations().active())
+            ],
+            [original, translation, None],
+        )
+
+        original.delete()
+        translation.refresh_from_db()
+
+        self.assertEqual(set(translation.translations()), set())
+
+    def test_language_and_translation_of_mixin_in_app(self):
+        """LanguageAndTranslationOfMixin when used within a feincms3 app"""
+        Page.objects.create(
+            title="home-en",
+            slug="home-en",
+            language_code="en",
+            is_active=True,
+            application="translated-articles",
+        )
+        Page.objects.create(
+            title="home-de",
+            slug="home-de",
+            language_code="de",
+            is_active=True,
+            application="translated-articles",
+        )
+
+        original = TranslatedArticle.objects.create(title="News", language_code="en")
+        translated = TranslatedArticle.objects.create(
+            title="Neues", language_code="de", translation_of=original
+        )
+
+        self.assertEqual(
+            [language["object"] for language in translations(original.translations())],
+            [original, translated, None],
+        )
+
+        with override_urlconf(apps_urlconf()):
+            self.assertEqual(
+                original.get_absolute_url(), "/home-en/{}/".format(original.pk)
+            )
+            self.assertEqual(
+                translated.get_absolute_url(), "/home-de/{}/".format(translated.pk)
+            )
+
+    def test_translations_filter_edge_cases(self):
+        """Exercise edge cases of the |translations filter"""
+        self.assertEqual(len(translations(None)), 3)
+        self.assertEqual(len(translations({})), 3)
+
+        t = Template(
+            "{% load feincms3 %}{% for l in c|translations %}{{ l.code }}{% endfor %}"
+        )
+        self.assertEqual(t.render(Context({"c": None})), "endefr")
+        self.assertEqual(t.render(Context({"c": []})), "endefr")
+        self.assertEqual(t.render(Context({"c": 1})), "endefr")

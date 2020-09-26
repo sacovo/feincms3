@@ -6,7 +6,94 @@ Change log
 `Next version`_
 ~~~~~~~~~~~~~~~
 
+- Changed the move form styling (hide the radio inputs and use
+  background colors, stripes to visualize the tree structure better.
+
+
+`0.39`_ (2020-09-25)
+~~~~~~~~~~~~~~~~~~~~
+
+- **BACKWARDS INCOMPATIBLE**: ``AbstractPageManager`` has been removed.
+  You should subclass the :class:`feincms3.pages.AbstractPageQuerySet`
+  instead and use the queryset's ``.as_manager(with_tree_fields=True)``
+  classmethod to generate a manager which adds tree fields to select
+  queries by default. If you didn't use the ``AbstractPageManager`` in
+  your code directly you don't have to do anything.
+- Started requiring ``django-tree-queries>=0.4.1``.
+- Completely reworked the page move form; allow directly specifying the
+  new position.
+
+
+`0.38.1`_ (2020-09-23)
+~~~~~~~~~~~~~~~~~~~~~~
+
+- The ``AbstractPageManager.active()`` method has been moved to a new
+  :class:`feincms3.pages.AbstractPageQuerySet`. If subclassing the
+  queryset you should re-create the page manager using
+  ``pages.AbstractPageManager.from_queryset(<your new subclass>)``.
+- Made :func:`~feincms3.renderer.render_in_context` create its own
+  ``Context`` if the context passed is ``None``.
+
+
+`0.37`_ (2020-09-10)
+~~~~~~~~~~~~~~~~~~~~
+
+- Changed :func:`feincms3.applications.page_for_app_request` to only use
+  active pages by default. This change should mostly not change anything
+  since :func:`~feincms3.applications.apps_urlconf()` and therefore
+  :func:`~feincms3.applications.apps_middleware` only add active
+  applications anyway.
+- Upgraded prettier and ESLint to recent versions.
+- Added some code to embed videos from YouTube and Vimeo without
+  requiring oEmbed.
+- Dropped compatibility with Python 3.5.
+
+
+`0.36`_ (2020-08-07)
+~~~~~~~~~~~~~~~~~~~~
+
+- Switched from ``url()`` to ``re_path()`` in ``apps_urlconf()`` to
+  avoid deprecation warnings.
+- Removed the limitation that apps could not have descendants in a page
+  tree. There may be valid use cases for this, especially if an apps'
+  URLconf module does not handle *all* paths.
+
+
+`0.35`_ (2020-07-28)
+~~~~~~~~~~~~~~~~~~~~
+
+- **(not yet) BACKWARDS INCOMPATIBLE** Moved the ``feincms3.apps``
+  module to :mod:`feincms3.applications`. The reason for this change is
+  that Django 3.2 will start autodiscovering app configs and therefore
+  automatically loads the ``.apps`` submodule of all entries in
+  ``INSTALLED_APPS``. This leads to a crash when the ``.apps`` module
+  contains models (such as our ``AppsMixin``). ``feincms3.apps`` isn't
+  populated from Django 3.2 upwards because of this.
+- Fixed an infinite recursion crash when referencing pages using
+  ``on_delete=SET_NULL``
+- Added a ``LanguageAndTranslationOfMixin`` which not only allows
+  defining the language of objects but also defining objects to be
+  translations of other objects.
+- Added a ``|translations`` filter to the template tag library. Added a
+  section about generating a language selector containing deep links to
+  the :ref:`multilingual sites guide <multilingual-sites>` guide.
+- Added Travis CI jobs for Django 3.1b1 and Python 3.8.
+- Renamed the main branch to ``main``.
+- Removed all arguments to ``super()`` since we're Python 3-only.
+- Dropped workarounds for the removal of ``django.utils.six`` and
+  ``python_2_unicode_compatible`` from the testsuite. They were only
+  required for our dependencies, not for feincms3 itself.
+
+
+`0.34`_ (2020-06-05)
+~~~~~~~~~~~~~~~~~~~~
+
 - Removed mentions of Python 2 compatibility in the docs.
+- Allowed using ``render_list`` with lists, not only querysets.
+- Dropped compatibility with Django<2.2 in accordance with the official
+  Django releases support policy.
+- Replaced ``url()`` with ``re_path()`` which avoids a few deprecation
+  warnings.
 
 
 `0.33`_ (2019-12-16)
@@ -586,4 +673,10 @@ functionality.
 .. _0.31: https://github.com/matthiask/feincms3/compare/0.30...0.31
 .. _0.32: https://github.com/matthiask/feincms3/compare/0.31...0.32
 .. _0.33: https://github.com/matthiask/feincms3/compare/0.32...0.33
-.. _Next version: https://github.com/matthiask/feincms3/compare/0.33...master
+.. _0.34: https://github.com/matthiask/feincms3/compare/0.33...0.34
+.. _0.35: https://github.com/matthiask/feincms3/compare/0.34...0.35
+.. _0.36: https://github.com/matthiask/feincms3/compare/0.35...0.36
+.. _0.37: https://github.com/matthiask/feincms3/compare/0.36...0.37
+.. _0.38.1: https://github.com/matthiask/feincms3/compare/0.37...0.38.1
+.. _0.39: https://github.com/matthiask/feincms3/compare/0.38.1...0.39
+.. _Next version: https://github.com/matthiask/feincms3/compare/0.39...main

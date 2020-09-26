@@ -1,19 +1,17 @@
-from __future__ import unicode_literals
-
+from collections import defaultdict
 from functools import update_wrapper
 
 from django import forms
-from django.conf.urls import url
 from django.contrib.admin import ModelAdmin, SimpleListFilter, helpers
 from django.contrib.admin.options import IncorrectLookupParameters
 from django.contrib.admin.utils import unquote
 from django.core.exceptions import PermissionDenied
 from django.db import router, transaction
 from django.shortcuts import redirect
-from django.urls import reverse
+from django.urls import re_path, reverse
 from django.utils.html import format_html, mark_safe
 from django.utils.text import capfirst
-from django.utils.translation import gettext_lazy as _, pgettext
+from django.utils.translation import gettext_lazy as _
 from django.views.decorators.csrf import csrf_protect
 
 from tree_queries.forms import TreeNodeChoiceField
@@ -122,17 +120,17 @@ class TreeAdmin(ModelAdmin):
 
         info = self.model._meta.app_label, self.model._meta.model_name
         return [
-            url(
+            re_path(
                 r"^(.+)/move/$",
                 action_form_view_decorator(self)(self.move_view),
                 name="%s_%s_move" % info,
             ),
-            url(
+            re_path(
                 r"^(.+)/clone/$",
                 action_form_view_decorator(self)(self.clone_view),
                 name="%s_%s_clone" % info,
             ),
-        ] + super(TreeAdmin, self).get_urls()
+        ] + super().get_urls()
 
     def move_view(self, request, obj):
         return self.action_form_view(
@@ -197,16 +195,8 @@ class MoveForm(forms.Form):
     Requires the node to be moved as ``obj`` keyword argument.
     """
 
-    MOVE_CHOICES = (
-        ("left", _("left sibling")),
-        ("right", _("right sibling")),
-        ("first", _("first child")),
-        ("last", _("last child")),
-    )
-
-    move_to = forms.ChoiceField(
-        label=_("Make node"), choices=MOVE_CHOICES, widget=forms.RadioSelect
-    )
+    class Media:
+        css = {"screen": ["feincms3/move-form.css"]}
 
     def __init__(self, *args, **kwargs):
         self.instance = kwargs.pop("obj")
@@ -214,36 +204,93 @@ class MoveForm(forms.Form):
         self.request = kwargs.pop("request")
         self.model = self.instance.__class__
 
-        super(MoveForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         queryset = self.model._default_manager.with_tree_fields()
-        self.fields["of"] = TreeNodeChoiceField(
-            label=pgettext("MoveForm", "Of"),
-            required=False,
-            queryset=queryset.exclude(pk__in=queryset.descendants(self.instance)),
-            label_from_instance=lambda obj: "{}{}".format(
-                "".join(["*** " if obj == self.instance else "--- "] * obj.tree_depth),
-                obj,
-            ),
+        self.fields["move_to"] = forms.ChoiceField(
+            label=capfirst(_("move to")),
+            widget=forms.RadioSelect,
+            choices=self._generate_choices(queryset),
         )
-        self.fields["of"].widget.attrs.update({"size": 30, "style": "height:auto"})
+
+    def _generate_choices(self, queryset):
+        children = defaultdict(list)
+        for node in queryset:
+            children[node.parent_id].append(node)
+
+        def _text_indent(depth):
+            return mark_safe(' style="text-indent:{}px"'.format(depth * 30))
+
+        choices = []
+
+        def _iterate(parent_id):
+            for node in children[parent_id]:
+                if node == self.instance:
+                    choices[-1] = (
+                        "",
+                        format_html(
+                            '<div class="mv is-self"{}><strong>{}</strong>',
+                            _text_indent(node.tree_depth),
+                            node,
+                        ),
+                    )
+                    continue
+
+                choices.append(
+                    (
+                        "{}:first".format(node.id),
+                        format_html(
+                            '<div class="mv to-first"{}><strong>{}</strong>'
+                            '<div class="mv-mark"{}>&rarr; {}</div></div>',
+                            _text_indent(node.tree_depth),
+                            node,
+                            _text_indent(node.tree_depth + 1),
+                            _("move here"),
+                        ),
+                    )
+                )
+                _iterate(node.id)
+                choices.append(
+                    (
+                        "{}:right".format(node.id),
+                        format_html(
+                            '<div class="mv to-right mv-mark"{}>&rarr; {}</div>',
+                            _text_indent(node.tree_depth),
+                            _("move here"),
+                        ),
+                    )
+                )
+
+        choices.append(
+            (
+                "0:first",
+                format_html(
+                    '<div class="mv to-root mv-mark">&rarr; {}</div>',
+                    _("move here"),
+                ),
+            )
+        )
+        _iterate(None)
+        return choices
 
     def clean(self):
-        data = super(MoveForm, self).clean()
+        data = super().clean()
         if not data.get("move_to"):
             return data
 
-        if data.get("of") and data.get("of") == self.instance:
-            raise forms.ValidationError(
-                {"of": _("Cannot move node to a position relative to itself.")}
-            )
+        pk, _sep, first_or_right = data["move_to"].partition(":")
+        data["first_or_right"] = first_or_right
 
-        if not data.get("of"):
+        if pk == "0":
             self.instance.parent = None
-        elif data["move_to"] in ("left", "right"):
-            self.instance.parent = data.get("of").parent
+            data["relative"] = None
         else:
-            self.instance.parent = data.get("of")
+            data["relative"] = self.instance.__class__._base_manager.get(pk=pk)
+
+            if first_or_right == "first":
+                self.instance.parent = data["relative"]
+            else:
+                self.instance.parent = data["relative"].parent
 
         # All fields of model are not in this form
         self.instance.full_clean(
@@ -258,17 +305,13 @@ class MoveForm(forms.Form):
                 pk=self.instance.pk
             )
         )
-        of = self.cleaned_data["of"]
-        move_to = self.cleaned_data["move_to"]
+        relative = self.cleaned_data["relative"]
+        first_or_right = self.cleaned_data["first_or_right"]
 
-        if move_to == "first" or (not of and move_to == "left"):
+        if relative is None or first_or_right == "first":
             siblings.insert(0, self.instance)
-        elif move_to == "last" or (not of and move_to == "right"):
-            siblings.append(self.instance)
-        elif move_to == "left":
-            siblings.insert(siblings.index(of), self.instance)
-        elif move_to == "right":
-            siblings.insert(siblings.index(of) + 1, self.instance)
+        else:
+            siblings.insert(siblings.index(relative) + 1, self.instance)
 
         for index, instance in enumerate(siblings):
             if instance == self.instance:
@@ -281,14 +324,8 @@ class MoveForm(forms.Form):
 
         self.modeladmin.message_user(
             self.request,
-            _("The node %(node)s has been made the" " %(move_to)s of node %(to)s.")
-            % {
-                "node": self.instance,
-                "move_to": dict(self.MOVE_CHOICES).get(
-                    self.cleaned_data["move_to"], self.cleaned_data["move_to"]
-                ),
-                "to": self.cleaned_data["of"] or _("root node"),
-            },
+            _("The node %(node)s has been moved to the new position.")
+            % {"node": self.instance},
         )
 
         opts = self.modeladmin.model._meta
@@ -301,7 +338,7 @@ class CloneForm(forms.Form):
         self.modeladmin = kwargs.pop("modeladmin")
         self.request = kwargs.pop("request")
 
-        super(CloneForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.fields["target"] = self.instance._meta.get_field("parent").formfield(
             form_class=TreeNodeChoiceField,
@@ -343,7 +380,7 @@ class CloneForm(forms.Form):
             )
 
     def clean(self):
-        data = super(CloneForm, self).clean()
+        data = super().clean()
         target = data.get("target")
         if target is None:
             return data

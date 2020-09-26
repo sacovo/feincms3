@@ -242,6 +242,7 @@ to override the default subregions handler instead:
                 )
                 if not items or not matches(items[0], subregions={None, ""}):
                     break
+            yield "</div>"
 
         def handle_fullwidth(self, items, context):
             while True:
@@ -267,9 +268,9 @@ is possible with a custom ``Regions`` class too:
 
 .. code-block:: python
 
-    from feincms3.regions import Region, cached_render
+    from feincms3.regions import Regions, cached_render
 
-    class JSONRegions(Regions):
+    class JsonRegions(Regions):
         @cached_render
         def render(self, region, context=None):
             return [
@@ -299,7 +300,7 @@ is possible with a custom ``Regions`` class too:
 
         return JsonResponse({
             "title": page.title,
-            "content": Regions.from_item(page, renderer=renderer, timeout=60),
+            "content": JsonRegions.from_item(page, renderer=renderer, timeout=60),
         })
 
 In this particular example ``register_string_renderer`` is a bit of a

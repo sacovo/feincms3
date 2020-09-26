@@ -11,21 +11,18 @@ from tree_queries.models import TreeNode, TreeQuerySet
 from feincms3.utils import validation_error
 
 
-class AbstractPageManager(models.Manager.from_queryset(TreeQuerySet)):
+class AbstractPageQuerySet(TreeQuerySet):
     """
     Defines a single method, ``active``, which only returns pages with
     ``is_active=True``.
     """
 
-    def get_queryset(self):
-        return super(AbstractPageManager, self).get_queryset().with_tree_fields()
-
     def active(self):
         """
         Return only active pages
 
-        This function is used in :func:`~feincms3.apps.apps_urlconf` and is the
-        recommended way to fetch active pages in your code as well.
+        This function is used in :func:`~feincms3.applications.apps_urlconf`
+        and is the recommended way to fetch active pages in your code as well.
         """
         return self.filter(is_active=True)
 
@@ -89,7 +86,7 @@ class AbstractPage(TreeNode):
     )
     static_path = models.BooleanField(_("static path"), default=False)
 
-    objects = AbstractPageManager()
+    objects = AbstractPageQuerySet.as_manager(with_tree_fields=True)
 
     class Meta:
         abstract = True
@@ -101,8 +98,12 @@ class AbstractPage(TreeNode):
         return self.title
 
     def __init__(self, *args, **kwargs):
-        super(AbstractPage, self).__init__(*args, **kwargs)
-        self._save_descendants_cache = (self.is_active, self.path)
+        super().__init__(*args, **kwargs)
+        # Go through self.__dict__ to avoid triggering deferred field loading
+        self._save_descendants_cache = (
+            self.__dict__.get("is_active"),
+            self.__dict__.get("path"),
+        )
 
     def _branch_for_update(self):
         nodes = OrderedDict({self.pk: self})
@@ -128,7 +129,7 @@ class AbstractPage(TreeNode):
         """
         Check for path uniqueness problems.
         """
-        super(AbstractPage, self).clean_fields(exclude)
+        super().clean_fields(exclude)
 
         if self.static_path:
             if not self.path:
@@ -140,7 +141,7 @@ class AbstractPage(TreeNode):
         else:
             self.path = "%s%s/" % (self.parent.path if self.parent else "/", self.slug)
 
-        super(AbstractPage, self).clean()
+        super().clean()
 
         # Skip if we don't exist yet.
         if not self.pk:
@@ -183,7 +184,7 @@ class AbstractPage(TreeNode):
                 or 0
             )
 
-        super(AbstractPage, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
         if save_descendants is True or (
             save_descendants is None

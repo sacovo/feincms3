@@ -1,8 +1,6 @@
-# coding=utf-8
-
 from django.conf import settings
 from django.db import models
-from django.db.models import signals
+from django.db.models import Q, signals
 from django.utils.translation import activate, get_language, gettext_lazy as _
 
 from tree_queries.fields import TreeNodeForeignKey
@@ -115,6 +113,80 @@ class LanguageMixin(models.Model):
         request.LANGUAGE_CODE = get_language()
 
 
+class LanguageAndTranslationOfMixin(LanguageMixin):
+    """
+    This object not only has a language, it may also be a translation of
+    another object.
+    """
+
+    translation_of = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+        verbose_name=_("translation of"),
+        limit_choices_to={"language_code": settings.LANGUAGES[0][0]},
+    )
+
+    class Meta:
+        abstract = True
+
+    def translations(self):
+        """
+        Return a queryset containing all translations of this object
+
+        This method can be called on any object if translations have been
+        defined at all, you do not have to fetch the object in the primary
+        language first.
+        """
+
+        primary = (
+            self.pk
+            if self.language_code == settings.LANGUAGES[0][0]
+            else self.translation_of_id
+        )
+        queryset = self.__class__._default_manager
+        return (
+            queryset.filter(Q(id=primary) | Q(translation_of=primary))
+            if primary
+            else queryset.none()
+        )
+
+    def clean_fields(self, exclude=None):
+        """
+        Implement the following validation rules:
+
+        - Objects in the primary language cannot be the translation of another object
+        - Objects in other languages can only reference objects in the primary language
+        """
+
+        super().clean_fields(exclude)
+
+        if self.language_code == settings.LANGUAGES[0][0] and self.translation_of:
+            raise validation_error(
+                _(
+                    "Objects in the primary language cannot be"
+                    " the translation of another object."
+                ),
+                field="translation_of",
+                exclude=exclude,
+            )
+
+        if (
+            self.translation_of
+            and self.translation_of.language_code != settings.LANGUAGES[0][0]
+        ):
+            raise validation_error(
+                _(
+                    "Objects may only be the translation of"
+                    " objects in the primary language."
+                ),
+                field="translation_of",
+                exclude=exclude,
+            )
+
+
 class RedirectMixin(models.Model):
     """
     The ``RedirectMixin`` allows adding redirects in the page tree.
@@ -137,7 +209,7 @@ class RedirectMixin(models.Model):
         """
         Ensure that redirects are configured properly.
         """
-        super(RedirectMixin, self).clean_fields(exclude)
+        super().clean_fields(exclude)
 
         if self.redirect_to_url and self.redirect_to_page_id:
             raise validation_error(

@@ -1,8 +1,10 @@
 from django import template
+from django.conf import settings
 from django.template.base import Node, TemplateSyntaxError, kwarg_re
+from django.urls import NoReverseMatch
 from django.utils.html import conditional_escape
 
-from feincms3 import apps
+from feincms3.applications import reverse_app as _reverse_app
 
 
 register = template.Library()
@@ -52,14 +54,14 @@ class ReverseAppNode(Node):
         # nothing.
         url = ""
         try:
-            url = apps.reverse_app(
+            url = _reverse_app(
                 namespaces,
                 view_name,
                 args=args,
                 kwargs=kwargs,
                 current_app=self._current_app(context),
             )
-        except apps.NoReverseMatch:
+        except NoReverseMatch:
             if fallback is not None:
                 url = fallback
             elif self.asvar is None:
@@ -123,3 +125,34 @@ def reverse_app(parser, token):
                 args.append(parser.compile_filter(value))
 
     return ReverseAppNode(namespaces, viewname, args, kwargs, asvar)
+
+
+@register.filter
+def translations(iterable):
+    """
+    Return a list of dictionaries, one for each language in
+    ``settings.LANGUAGES``. An example follows:
+
+    .. code-block:: python
+
+        [
+            {"code": "en", "name": "English", "object": <instance>},
+            {"code": "de", "name": "German", "object": None},
+            # ...
+        ]
+
+    The filter accepts anything you throw at it. "It" should be an iterable of
+    objects having a ``language_code`` property however, or anything
+    non-iterable (such as ``None``). The filter always returns a list of all
+    languages in ``settings.LANGUAGES`` but the ``object`` key's value will
+    always be ``None`` if the data is unusable.
+    """
+    try:
+        translations = {obj.language_code: obj for obj in iterable} if iterable else {}
+    except TypeError:
+        translations = {}
+
+    return [
+        {"code": code, "name": name, "object": translations.get(code)}
+        for code, name in settings.LANGUAGES
+    ]

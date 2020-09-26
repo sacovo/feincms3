@@ -33,7 +33,7 @@ SECRET_KEY = "supersikret"
 LOGIN_REDIRECT_URL = "/?login=1"
 
 ROOT_URLCONF = "testapp.urls"
-LANGUAGES = (("en", "English"), ("de", "German"))
+LANGUAGES = [("en", "English"), ("de", "German"), ("fr", "French")]
 
 TEMPLATES = [
     {
@@ -52,7 +52,7 @@ TEMPLATES = [
 ]
 
 MIDDLEWARE = [
-    "feincms3.apps.apps_middleware",
+    "feincms3.applications.apps_middleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
